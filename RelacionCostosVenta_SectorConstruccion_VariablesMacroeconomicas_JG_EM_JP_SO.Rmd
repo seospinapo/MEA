@@ -1,0 +1,513 @@
+---
+title: "Metodos Estadisticos Avanzados - Reporte tecnico costos de venta empresas del sector construcción"
+author: "Emilio Machado, Juan Jose Gonzalez, Juan David Perez, Sebastian Ospina"
+date: "30/11/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r, echo=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+```
+
+```{r load_libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)  
+library(MASS)
+library(psych)
+library(lme4)
+library(corrgram)
+```
+#Analisis de las variables macro economicas con los costos de venta de las empresas del sector construcción
+
+El objetivo general del trabajo es identificar los indicadores macroeconómicos o algunas de sus transformaciones que mejor describan el comportamiento de los costos de ventas de las empresas de algún sector. 
+
+_El dataset, y el codigo en R se puede encontrar en el siguiente repositorio en GitHub: https://github.com/seospinapo/MEA _ 
+
+
+###Obtención de los datos desde las diferentes fuentes de información
+
+La información que se tendrá en cuenta para el desarrollo del trabajo se obtendrá de la página web de la Superintendencia de Sociedades (https://siis.ia.supersociedades.gov.co/) en donde se hará uso de la opción de descarga masiva de estados para obtener la información de los estados de resultados para empresas plenas individuales al cierre de los años 2016, 2017, 2018 y 2019.
+
+Para la selección del sector económico que se trabajó se analizaron la cantidad de empresas por cada uno y se decidió utilizar el segmento de la construcción que cuenta con 277 empresas únicas y es bastante relevante para el desarrollo económico del país pues contribuye en gran medida al producto interno bruto.
+
+Los últimos 4 indicadores se decidieron incluir en el análisis pues se considera pueden tener una correlación alta con la variable que se desea predecir al ser más específicos para la construcción. Los indicadores de precios de la vivienda nueva y usada pueden lograr capturar el comportamiento de los costos a través del incremento en precios durante el ciclo de actividad que el sector presenta que a su vez se relaciona en gran medida al comportamiento de la economía del país (Departamento Administrativo Nacional de Estadística – DANE, 2020). El ICCV se relaciona directamente con los costos de las empresas pues describe el comportamiento de los precios para los materiales más representativos en la construcción y de igual forma el FIVI, puede describir como fluctúa el mercado, y por lo tanto relacionarse con los costos de venta al representar el nivel de financiación para la compra de vivienda.
+
+
+###Construcción de la base de datos
+
+La información descargada se obtuvo en varios archivos, en dos de ellos se encontraban los estados financieros de cada empresa, uno con la información de 2016 y 2017 y otro con la información de 2018 y 2019. Los demás archivos contienen la información de los indicadores económicos y el procedimiento para unir todas las fuentes de información fue el siguiente: primero se tomaron los costos e ingresos de las empresas y se unificaron en una sola tabla. Posteriormente se extrajeron los datos de cada indicador al cierre del año y con ayuda de Excel se unieron a la información financiera de las empresas usando la columna de los años. Adicionalmente, se decidió agregar como variables adicionales las variaciones de los indicadores pues se considera que estas describen mejor el cambio en los costos de las empresas que el indicador como tal. Para el cálculo de estas variaciones fue necesario obtener los indicadores al cierre de 2015 y de igual forma en Excel se unieron a la tabla principal.
+
+###Lectura de los datos
+```{r}
+datos<-read.csv("https://raw.githubusercontent.com/seospinapo/MEA/main/Base.csv",sep=";")
+```
+
+###Resumen de los datos
+Como primer acercamiento a la data, evaluamos un resumen básico de los daos para obtener un conocimiento superficial y obtener un indicio de como iniciar el análisis exploratorio de la infroamción y el tratamiento a realizar sobre las variables con miras al desarrollo del modelo mencionado
+
+```{r, echo=FALSE, warning=FALSE}
+summary(datos)
+```
+
+Como premisa y criterio de exclusión para el análisis que se va a llevar a cabo, unicamente se realizará el tratamiento para las empreaas cuyos costos e ingresos de venta sean superiores a cero, pues como proposito fundamental de trabajo, se buscrá predicir costos de vente para empresas en fase totalmente operativa y no sobre empresas que se encuentren inactivas o en etapa preoperativa
+
+###Acotación de los datos
+```{r}
+datos<-datos[datos$Costo_de_ventas>0, ]
+datos<-datos[datos$Ingresos_Ordinarios>0, ]
+```
+
+Debido a que algunas variables de variación se encuentran en unidades de porcentaje, se llevan las variaciones de estas a la misma unidad de los otros indicadores, con el proposito de unificar la data.
+Se calculan variaciones de los indicadores mcroeconomicos, pues se considera que un dato puntual no logra describir la relación que hay con los costos de venta, ya que las variaciones de estas cifras son las que llevan a generar cambios en las cifras financieras de las empresas.
+
+###Creación de nuevas variables
+```{r}
+datos['Inflacion']=as.numeric(datos$Inflacion)/100
+datos['Variacion_PIB_Real']=as.numeric(datos$Variacion_PIB_Real)/100
+datos['Var_Salario_Minimo']=as.numeric(datos$Var_Salario_Minimo)/100
+datos['Var_UVR']=as.numeric(datos$Var_UVR)/100
+datos['Var_ICCV']=as.numeric(datos$Var_ICCV)/100
+datos['Var_FIVI']=as.numeric(datos$Var_FIVI)/100
+```
+
+###Creación de las variables respuesta
+
+La variable objetivo del analisis es el costo de venta, pero debido a que existen empresas de diferentes tamaños en ventas, se hace necesario disminuir la variabilidad que se pueda generar por esta, en donde se estandarice y se lleve a cifras comparables, por esto se llevan cada una de las siguientes transformaciones: Dividir los costos de venta por los ingresos generados, lo que genera una eliminación de la variabilidad
+
+```{r}
+datos['prop_costos']=as.numeric(datos$Costo_de_ventas)/as.numeric(datos$Ingresos_Ordinarios)
+```
+
+Una segunda variable respuesta, es la indexación de los costos de venta a valor presente, para que estos sean comparables dentro del mismo modelo y observados en un mismo periodo de tiempo
+
+```{r}
+for(i in 1:nrow(datos)){
+  if (datos[i,"Anio"]==2016) {
+    datos[i,"costoindex"]<-as.numeric(datos[i, "Costo_de_ventas"])*(1+0.0409)*(1+0.0318)*(1+0.0380)
+  } else if (datos[i,"Anio"]==2017) {
+    datos[i,"costoindex"]<-as.numeric(datos[i, "Costo_de_ventas"])*(1+0.0318)*(1+0.0380)
+  } else if (datos[i,"Anio"]==2018) {
+    datos[i,"costoindex"]<-as.numeric(datos[i, "Costo_de_ventas"])*(1+0.0380)
+  } else {
+    datos[i,"costoindex"]<-as.numeric(datos[i, "Costo_de_ventas"])*1
+  }
+}
+```
+
+##Analisis exploratorio de datos
+
+###Analisis mediante boxplot
+Como primer acercamiento al entendimiento de los datos, se realiza un Boxplot de la variable respuesta
+
+```{r, echo=FALSE, warning=FALSE}
+boxplot(datos$prop_costos,ylab="Proporcion de Costos")
+```
+
+Se puede observar que hay algunos valores muy extremos y por lo tanto no se puede ver con claridad como esta distribuidos la mayoría de los registros. Para solucionar esto tomaremos unicamente la empresas cuya proporción de costos sobre ingresos sea menor a 1, es decir que sea una empresa rentable, es decir el margen bruto minimo de la empresa sea 0.
+
+```{r}
+datos2<-datos[datos$prop_costos<1, ]
+```
+
+```{r, echo=FALSE, warning=FALSE}
+boxplot(datos2$prop_costos,ylab="Proporcion de Costos",col="skyblue")
+```
+
+Se puede observar que la mayoría de las empresas tienen una proporción entre 0.6 y 1, aunque hay varias con una proporción menor a 0.5. Para analizar la distribución de esta variable a continuación se graficará el histograma
+
+###Analisis por medio de histogramas
+```{r, echo=FALSE, warning=FALSE}
+hist(datos2$prop_costos,30, col="green", xlab="Proporcion de los costos", main="Histograma proporcion de los costos")
+```
+
+Se puede observar que la mayoria de empresas tienen una proporción superior a 0.5 con mayor concentración en el rango [0.8-1.0], por lo que se van a considerar solo las empresas cuya proporción sea >=0.5 y <=1.2. Esto implica tener empresas cuyo margen bruto es negativo, buscando que la variable respuesta se aproxime a una distribución normal.
+
+```{r, echo=FALSE, warning=FALSE}
+datos2<-datos[datos$prop_costos<=1.2, ]
+datos2<-datos2[datos2$prop_costos>=0.5, ]
+multi.hist(datos2$prop_costos, dcol = c("blue","red"), dlty = c("dotted", "solid"),
+           main = "Histograma proporcion de los costos acotado")
+
+```
+
+Se puede observar en el histograma que la variable respuesta se aproxima a una distribución normal.
+
+Se procede a eliminar las variables que inicialmente no se van a utilizar dentro de la construcción del modelo ya que en algunos casos se van a utilizar son sus variaciones.
+
+```{r, echo=FALSE, warning=FALSE,results="hide"}
+borrar <- c("ï..CIIU","Mes","Fecha","Costo_de_ventas","Ingresos_Ordinarios","Var_Tasa_desempleo","Indice_Precios_Vivienda_Nueva","Indice_Real_Precios_Vivienda_Usada","Salario_Minimo")
+datos3 <- datos2[ , !(names(datos2) %in% borrar)]
+head(datos3, n=9)
+```
+
+Adicional a la eliminación de las variables que no se van a utilizar, se decide eliminar las empresas cuyos registros no aparezcan en los 4 años, ya que esto puede generar inconsistencias cuando se corra el modelo de efectos mixtos.
+
+```{r, echo=FALSE, warning=FALSE}
+datosg=datos3 %>%
+  group_by(Nit) %>%tally()
+
+datos4 <-merge(x = datos3, y = datosg, by = "Nit", all.x = TRUE)
+datos4<-datos4[datos4$n==4, ]
+```
+
+Una vez realida la limpieza de los datos, se procede a volver a generar el histograma de frecuencias la proporcion de los cotos, y del logaritmo de los costos indexados. Se decidió mirar esta segunda variable respuesta, buscando un mejor ajuste a la distribución normal.
+
+```{r, echo=FALSE, warning=FALSE}
+multi.hist(datos4$prop_costos, dcol = c("blue","red"), dlty = c("dotted", "solid"),
+           main = "Histograma proporcion de los costos acotado",breaks=30)
+
+multi.hist(log(as.numeric(datos4$costoindex)), dcol = c("blue","red"), dlty = c("dotted", "solid"),
+           main = "Histograma logaritmo de los costos",breaks=30)
+
+```
+
+Se puede observar el logaritmo natural de los costos indexados presenta una distribución mas cercana a la distribución normal, sin mebargo, se continuará haciendo el análisis con la proporción de los costos ya que también cuenta con un ajuste aceptable y al usalra se esta eliminando la variabilidad proveniente del tamaño de las empresas.
+
+###Analisis de correlaciones
+Posteriormente se hace un analisis de correlación entre las variables, para identificar cuales variables podrían generar inconsistencias en la construcción del modelo por ser muy correlacionadas entre si
+
+
+```{r, echo=FALSE, warning=FALSE}
+corrgram(datos4[,1:17], panel = panel.cor,col.regions=colorRampPalette(c("darkred", "brown",
+                                        "darkkhaki", "darkgreen")))
+```
+
+Al realizar este analisis se observa que ninguna variable tiene alta correlación lineal con la variable respuesta, ya que la estructura de datos analizada compara 552 observaciones con 4 observaciones de los indicadores macroeconómicos, lo que no permite un buen analisis de la correlación, por lo que se decide realizar el analisis de correlación con el promedio de la variable respuesta y de esta forma poder caracterizar la correlación con un estadístico que describa el comportamiento de medida central
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+agrupados<-datos4 %>%
+  group_by(Anio) %>%
+  summarise(across(.cols = everything(), .fns = mean))
+
+borrar <- c("Nit","n")
+agrupados <- agrupados[ , !(names(agrupados) %in% borrar)]
+
+
+corrgram(agrupados[], panel = panel.cor, col.regions=colorRampPalette(c("darkred", "brown",
+                                        "darkkhaki", "darkgreen")))
+
+```
+
+Se observa que las variables que más correlación tienen con la variable respuesta son las variación de PIB y la variación del ICCV. Lo anterior es transversal a las 2 posibles variables respuestas y por lo tanto serán las variables que se inclurán en las regresiones posteriormente.
+
+###Analisis de boxplot entre variables
+
+Para obtener una representación visual de esta relación se graficarán lo boxplot de las variables con mayor correlación con la variable respuesta.
+
+```{r, echo=FALSE, warning=FALSE}
+par(mfrow = c(2,2))
+boxplot(prop_costos~Var_Indice_Real_Precios_Vivienda_Usada, data=datos4, col="skyblue")
+boxplot(prop_costos~Tasa_desempleo, data=datos4, col="blue")
+boxplot(prop_costos~Variacion_PIB_Real, data=datos4, col="green")
+boxplot(prop_costos~Var_Salario_Minimo, data=datos4,col="darkgreen")
+par(mfrow = c(2,2))
+boxplot(prop_costos~TRM, data=datos4, col="skyblue")
+boxplot(prop_costos~Var_ICCV, data=datos4, col="blue")
+boxplot(prop_costos~Var_FIVI, data=datos4, col="green")
+```
+
+##Construcción de modelos
+
+Posteriormente, se separá pa muestra en entrenamiento y prueba con el fin de tener datos para probar el desempeño del modelo más adelante, se fija una semilla para que siempre se obtenga la misma muestra de entrenamiento y prueba aleatoria, y se define un tamaño 70-30 para entrenamiento y prueba respectivamente
+
+```{r, echo=FALSE, warning=FALSE}
+
+#Separar muestra para entrenamiento y prueba
+empresas = unique(datos4$Nit)
+set.seed(07071994)
+train_size = 0.70
+empresas_entrenamiento = sample(seq_len(length(empresas)), size = floor(train_size * length(empresas)))
+entrenamiento <- empresas[empresas_entrenamiento]
+validacion <- empresas[-empresas_entrenamiento]
+datos_entrenamiento = subset(datos4, Nit %in% entrenamiento)
+datos_validacion = subset(datos4, Nit %in% validacion)
+
+```
+
+###Modelos por regresión lineal
+
+Incialmente se hará una regresión lineal con el fin de identificar cuales son las variables que verdaderamente describen el comportamiento de los costos. Esta regresión se hará unicamente con las variables identificadas con alta correlacióncon la variable respuesta y que en lo posible no tengan alta colinealidad entre ellas mismas. 
+
+```{r}
+modelo3<-lm(prop_costos ~ Var_ICCV+  Variacion_PIB_Real + Tasa_desempleo  + Var_Indice_Precios_Vivienda_Nueva + Var_Salario_Minimo + TRM  + Var_FIVI
+                 , data=datos_entrenamiento)
+summary(modelo3)
+summary(datos_entrenamiento["prop_costos"])
+```
+
+Por los resultados obtenidos en la regresión lineal se puede observar que tenemos un modelo saturado en donde sus regresores están altamente correlacionados. Por otro lado el Beta del intercepto de esta regresión aparenta ser consistente por su signo, pero si todos los valores de los regresores fueran cero, este empezaria en 0.82, y nuestros datos estan desde 0.5 a 1.2, lo que puede estar representando el valor medio de la proporcion de los gastos, que al calcularse se ve que su valor es cercano al valor del intercepto.
+
+Con el fin de identificar las variables regresoras que verdaderamente aportan información relevante se corrió un proceso backward donde se evaluen las posibles combinaciones de regresores y se vayan eliminando aquellos que no sean significativos.
+
+```{r}
+step(object = modelo3, direction = "both", trace = 1)
+```
+
+Según el resultado obtenido en el paso anterior, unicamente el intercepto es necesario para describir el comportamiento de los costos. Debido a que no es la respuesta que estamos buscando para poder continuar con el desarrollo del trabajo se correran modelos de regresion lineal simple entre cada una de los regresores y la variable respuesta.
+
+Otra conclusión que se pede observar del proceso anterior es que el modelo lineal estima coeficientes unicamente cuando se ingresan 3 regresores o menos. Esto se debe a que entre ellos existe alta colinealidad.
+
+####Modelos regresion lineal simple
+
+```{r}
+#Tasa de desempleo
+modelo5<-lm(prop_costos ~ Tasa_desempleo, data=datos_entrenamiento)
+summary(modelo5)
+AIC(modelo5)
+
+#Indice de precios de la vivienda nueva
+modelo5<-lm(prop_costos ~ Var_Indice_Precios_Vivienda_Nueva, data=datos_entrenamiento)
+summary(modelo5)
+AIC(modelo5)
+
+#Indice de precios de la vivienda Usada
+modelo5<-lm(prop_costos ~ Var_Indice_Real_Precios_Vivienda_Usada, data=datos_entrenamiento)
+summary(modelo5)
+AIC(modelo5)
+
+#Variación PIB Real
+modelo5<-lm(prop_costos ~ Variacion_PIB_Real , data=datos_entrenamiento)
+summary(modelo5)
+AIC(modelo5)
+
+#Variación Salario Mínimo
+modelo5<-lm(prop_costos ~ Var_Salario_Minimo , data=datos_entrenamiento)
+summary(modelo5)
+AIC(modelo5)
+
+#TRM
+modelo5<-lm(prop_costos ~TRM, data=datos_entrenamiento)
+summary(modelo5)
+AIC(modelo5)
+
+#Variación ICCV
+modelo5<-lm(prop_costos ~ Var_ICCV, data=datos_entrenamiento)
+summary(modelo5)
+AIC(modelo5)
+
+```
+
+Por los valores AIC resultantes de cada uno de los modelos anteriores se concluye que la Variación del PIB real y la variación del ICCV son las variables que mejor se relacionan con la tendencia del comportamiento de los costos.
+
+Al revisar los valores de los R cuadrado obtenidos en los modelos simples se observa que estos carecen de capacidad predictiva por considerar unicamente una variable.Se procede a realizar una regresión lineal con las dos variables identificadas con mejor relación a la variable respuesta en los modelos univariante.
+
+####Modelo lineal multivariante
+
+```{r}
+modelo5<-lm(prop_costos ~ Var_ICCV+Variacion_PIB_Real, data=datos_entrenamiento)
+summary(modelo5)
+```
+
+Cuando se observa el resultado del modelo, se identifica que al tener dos variables respuesta, ninguna es significativa, se realiza un analisis grafico de los datos para entender un poco mas los resultados. Aqui de nuevo se observa que el valor del intercepto es cercano al valor promedio de la variable respuesta.
+
+**Residuales**
+
+```{r, echo=FALSE, warning=FALSE}
+par(mfrow = c(2,2))
+plot(modelo5)
+```
+
+Cuando se analizan las graficas, se observa que los residuales del modelo en la grafica Normal Q-Q se acercan en gran parte a la linea normal, por otro lado cuando se observa los residuales estos tienen un comportamiento agrupado en cuatro valores, no se observa una nube de puntos. Cuando se hace el mismo procedimiento en el set de datos para validación, estos presentan el mismo comportamiento.
+
+```{r, echo=FALSE, warning=FALSE}
+valores_predichos = predict(modelo5,na.omit(datos_validacion))
+residuales = na.omit(datos_validacion$prop_costos)-valores_predichos 
+plot(valores_predichos, residuales,xlab="Valores predichos", ylab="Residuales", col="skyblue")
+print(paste("SME=", sqrt(mean(residuales^2))))
+```
+
+Debido a los resultados del modelo anterior, se decide explorar otra transformación de los datos, para esto se procede a considerar como variable respuesta la exponencial de la proporción de los costos, buscando un mejor ajuste a un modelo lineal. Por otro lado dado que las dos variable regresoras tienen una alta correlación lineal entre si, se buscó otra variable que tuviera una correlación por encima de 0.5 con la variable respuesta, pero que no estuviese fuertemente correlacionada con las otras dos variables.
+
+####Modelo lineal con la exponencial de la proporción de los costos
+
+```{r}
+modelo6<-lm(exp(prop_costos) ~ Variacion_PIB_Real+Var_Indice_Real_Precios_Vivienda_Usada, data=datos_entrenamiento)
+summary(modelo6)
+summary(exp(datos_entrenamiento["prop_costos"]))
+```
+
+Al comparar estos resultados con el modelo anterior, se logra identificar que cuando se cambia la variable de la variación de ICCV por la variación del indice real de precios de vivienda usada, y a su vez se usa una variable respuesta como el exponencial de la proporción de los costos, se encuentra que al menos una variable es significativa, y el R2 del modelo mejora. Al analizar los Betas del modelo y comparandolo con las estadisticas de resumen de la variable respuesta, el valor del incercepto si las otras dos variables fueran cero, se encuentra entre el minimo y el primer cuantil de los datos de la variable respuesta, por otro lado la variacion del PIB el beta representa que si la variación es del 100%(ya que estamos con valores entre 0 y 1), la proporción de los costos aumentaria un 4.86 unidades, y un cambio del 1%(0.01) haria que el exponencial de la proporción de los costos aumentase 0.0486 unidades, por ultimo el Beta de la variación del indice real de precios de vivienda usada, su beta explica que un cambios del 1% manteniendo los otros parametros constantes, generaria un aumento de 0.018 unidades en el exponencial de la proporcion de los costos
+
+**Residuales**
+
+```{r, echo=FALSE, warning=FALSE}
+par(mfrow = c(2,2))
+plot(modelo6)
+```
+
+Al analizar la grafica normal Q-Q se observa que se siguen presentando valores distantes a la linea normal, pero aun se continua observando que gran parte de estos se acercan a la linea. Por otro lado los residuales continuan presentando el mismo comportamiento del modelo anterior. Lo anterior tambien sucede con los residuales en los datos de validacion, ya que se observa el comportamiento agrupado.
+
+```{r, echo=FALSE, warning=FALSE}
+valores_predichos = predict(modelo6,na.omit(datos_validacion))
+residuales = na.omit(exp(datos_validacion$prop_costos))-valores_predichos
+par(mfrow = c(1,2))
+plot(valores_predichos, residuales,xlab="Valores predichos", ylab="Residuales", col="skyblue")
+plot(valores_predichos, exp(datos_validacion$prop_costos),xlab="Valores predichos", ylab="Valores reales", col="blue")
+print(paste("SME=", sqrt(mean(residuales^2))))
+```
+
+Dado que se encontró que la variable respuesta transformada presenta un mejor ajuste, se procede a crear en el dataset original la nueva variable, y se repite el proceso de segmentacion de datos, como la semilla se fijo, vamos a obtener las mismas muestras para los siguientes modelos.
+
+```{r, echo=FALSE, warning=FALSE}
+#Separación de la muestra en entrenamiento y prueba
+
+datos4["exp_prop_costos"]=exp(datos4["prop_costos"])
+empresas = unique(datos4$Nit)
+set.seed(07071994)
+train_size = 0.70
+empresas_entrenamiento = sample(seq_len(length(empresas)), size = floor(train_size * length(empresas)))
+entrenamiento <- empresas[empresas_entrenamiento]
+validacion <- empresas[-empresas_entrenamiento]
+datos_entrenamiento = subset(datos4, Nit %in% entrenamiento)
+datos_validacion = subset(datos4, Nit %in% validacion)
+```
+
+Al usar un modelo lineal para buscar la predicción de datos siendo la variable objetivo el logaritmo de los costos de ventas, podemos ver que, aún tomando los regresores resultantes del análisis exploratorio de los datos, obtenemos como resultado un modelo en donde los regresores no tienen significancia según sus valores p y una capacidad predictiva muy poobre basada en el vlor resultante del r2 ajustado.
+
+Tomando esto como precedente, concluimos que un modelo lineal no es suficiente para poder explicar los costos de venta de cada empresa basados en indicadores macroeconomicos, por lo que se considera la opción de usar un modelo de efectos mixtos, el cual nos puede ayudar a carcaterizar cada individuo de la muestra mediante los efectos aleatorios y las pendientes aleatorias asignadas a cada sujeto de la muestra, lo que nos puede llevar a tener un modelo que ajustandoe a nivel de sujeto, tenga una mejor capacidad predictiva y permita modelar los costos de venta.
+
+###Modelos de efectos mixtos
+
+```{r}
+mixtos2 <- lmer(exp_prop_costos ~ Var_Indice_Real_Precios_Vivienda_Usada+  Variacion_PIB_Real+(1+Variacion_PIB_Real|Nit)  , data=datos_entrenamiento)
+summary(mixtos2)
+```
+
+Cuando se analiza los residuales del modelo, y se compara con el modelo anterior de regresión lineal, se encuentra que el rango de los residuales es mas amplio en este modelo, pero cuando se grafica los residuales de este, estos ya no presentan un comportamiento agrupado, de hecho se observa una nube de puntos, por lo que se encuentra una mejoria en los residuales y los valores encontrados.
+
+```{r, echo=FALSE, warning=FALSE}
+plot(mixtos2)
+```
+
+```{r, echo=FALSE, warning=FALSE}
+qqnorm(resid(mixtos2),col="blue")
+qqline(resid(mixtos2),col="red")
+```
+
+Cuando se analiza la grafica Normal Q-Q se encuentra al igual que los modelos anteriores que aun existen observaciones lejanas a la linea normal, pero se continua encontrando gran parte de estas cercanas a la linea.
+
+```{r, echo=FALSE, warning=FALSE}
+validacion_predichos = simulate(mixtos2, nsim = 1,seed = 200,re.form = ~(1+Variacion_PIB_Real|Nit), newdata = datos_validacion, allow.new.levels = TRUE)
+residuales = datos_validacion$exp_prop_costos-validacion_predichos$sim_1
+print(paste("SME=", sqrt(mean(residuales^2))))
+```
+
+Posteriormente se calculó el SME del modelo en donde se encontró que este es superior al SME del modelo por regresión lineal, al analizar el modelo con datos de validación, se identifica en la grafica que el modelo tiene bajo poder predictivo, ya que se observa casi aleatoriedad en los valores predichos versus los reales
+
+```{r, echo=FALSE, warning=FALSE}
+par(mfrow = c(1,2))
+plot(validacion_predichos$sim_1, datos_validacion$exp_prop_costos,xlab="Valores predichos", ylab="Valores reales", col="blue")
+plot(validacion_predichos$sim_1, residuales,xlab="Valores predichos", ylab="Residuales", col="skyblue")
+```
+
+Dado los resultados del modelo anterior se considera tambien el modelo con dos interacciones, buscando reducir la aleatoriedad de la variable respuesta cuando se predice
+
+```{r, warning=FALSE}
+mixtos3 = lmer(exp_prop_costos ~ Var_Indice_Real_Precios_Vivienda_Usada+  Variacion_PIB_Real+(1+Var_Indice_Real_Precios_Vivienda_Usada|Nit)+(1+Variacion_PIB_Real|Nit)  , data=datos_entrenamiento)
+summary(mixtos3)
+plot(mixtos3)
+```
+
+Cuando se analiza los residuales del modelo, y se compara con el modelo de regresión lineal, se encuentra que el rango de los residuales sigue siendo amplio como el modelo de efectos mixtos anterior, pero cuando se grafica los residuales de este, se observa una nube de puntos, por lo que se encuentra una mejoria en los residuales y los valores encontrados con respecto al modelo de regresión lineal.
+
+```{r, echo=FALSE, warning=FALSE}
+qqnorm(resid(mixtos3),col="blue")
+qqline(resid(mixtos3),col="red")
+```
+Cuando se analiza la grafica Normal Q-Q se encuentra al igual que los modelos anteriores que aun existen observaciones lejanas a la linea normal, pero se continua encontrando gran parte de estas cercanas a la linea normal, se podria considerar eliminar las empresas cuyos datos se encuentran lejanos a esta linea.
+
+```{r, echo=FALSE, warning=FALSE}
+validacion_predichos = simulate(mixtos3, nsim = 1,seed = 200,re.form = ~(1+Var_Indice_Real_Precios_Vivienda_Usada|Nit)+(1+Variacion_PIB_Real|Nit), newdata = datos_entrenamiento, allow.new.levels = TRUE)
+residuales = datos_entrenamiento$exp_prop_costos-validacion_predichos$sim_1
+```
+Al analizar el modelo con datos de entrenamiento, se identifica en la grafica que el modelo con estos datos presenta una tendencia lineal, aunque se encuentran datos dispersos
+
+```{r, echo=FALSE, warning=FALSE}
+par(mfrow = c(1,2))
+plot(validacion_predichos$sim_1, datos_entrenamiento$exp_prop_costos,xlab="Valores predichos", ylab="Valores reales", col="blue")
+plot(validacion_predichos$sim_1, residuales,xlab="Valores predichos", ylab="Residuales", col="skyblue")
+```
+
+Por ultimo se calculó el SME del modelo con los datos de en donde se encontró que este es superior al SME del modelo por regresión lineal, pero menor al de efectos mixtos anterior, al analizar el modelo con datos de validación, se identifica en la grafica que el modelo tiene bajo poder predictivo, ya que se observa casi aleatoriedad en los valores predichos versus los reales
+
+```{r, echo=FALSE, warning=FALSE}
+validacion_predichos = simulate(mixtos3, nsim = 1,seed = 200,re.form = ~(1+Var_Indice_Real_Precios_Vivienda_Usada|Nit)+(1+Variacion_PIB_Real|Nit), newdata = datos_validacion, allow.new.levels = TRUE)
+residuales = datos_validacion$exp_prop_costos-validacion_predichos$sim_1
+sqrt(mean(residuales^2))
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+par(mfrow = c(1,2))
+plot(validacion_predichos$sim_1, datos_validacion$prop_costos,xlab="Valores predichos", ylab="Valores reales", col="blue")
+plot(validacion_predichos$sim_1, residuales,xlab="Valores predichos", ylab="Residuales", col="skyblue")
+```
+
+Con la funcion simulate() se buscó simular los efectos aleatorios del modelo de efectos mixtos, los resultados de esta funcion se observan en el cambio de los datos predichos del modelo de regresión lineal, y sus residuales en donde se agrupaban en cuatro valores predichos, pero aun asi se sigue observando dispersion cuando se realiza con el dataset de prueba.
+
+
+###Analisis
+
+
+####Sobre el procesamiento de la información y el analisis exploratorio de datos
+
+Inicialmente de la base de datos construida, realizamos un análisis exploratorio de la base de datos correspondiente al proyecto constituida por información financiera y datos macroeconómicos de fuentes oficiales y veraces.
+
+La base de datos al ser construida sobre 4 años tenía un intervalo de tiempo muy corto, lo que implicó realizar una serie de análisis y transformaciones previamente explicadas con el propósito de poder usar la data y entender como a través de estas transformaciones los modelos podían tener una mejor lectura y por ende lograr una mayor capacidad predictiva sobre nuestra variable respuesta.
+
+Para la variable respuesta también fue necesario entender y transformar con el propósito de eliminar fuentes de variabilidad como los diferentes tamaños de las empresas y las temporalidades de los datos consultados, por esto y con el propósito de incluir las fuentes de variabilidad la variable respuesta elegida fue la proporción de los costos de venta sobre los ingresos de la compañía para así lograr una estandarización de esta medida y poder llevar a cabo un análisis que abarcara las empresas sin tener que incluir otras fuentes de variación en nuestros regresores.
+
+Al hacer un análisis por medio de histogramas de la variable respuesta, se decidió acotarla entre [0.5, 1.2] con el fin de que esta se parezca mas a una distribución normal, por lo que el modelo que se construya será aplicable solo a empresas bajo este criterio.
+
+
+####Sobre los modelos de regresión lineal
+
+Para realizar las regresiones lineales inicialmente se decidió usar como regresoras las variables que tenían alta correlación con la variable respuesta pero el modelo no arrojo buenos resultados y solo arrojo betas para tres variables de la regresión, esto se debe a la alta colinealidad que existe entre las diferentes variables macroeconómicas utilizadas, por lo que se decidió probar con modelos lineales simples y ver cual de estas variable se relaciona mejor con la variable respuesta, de allí se obtuvo que “La Variación del PIB” y “La Variación del ICCV”, presentaban betas significativos en sus regresiones lineales simples pero su R cuadrado continuaba siendo muy bajo para predecir la variable respuesta. Se decidió entonces construir un modelo multivariante con estas dos variables, sin alcanzar mejoría ya que sus betas siguen siendo poco significativos y su R cuadrado muy bajo.
+
+Al no obtener buenos resultados con ninguno de los modelos ensayados, se decidió ensayar una transformación exponencial de la variable respuesta, buscando un mejor ajuste a un modelo lineal. Por otro lado dado que las dos variable regresoras tienen una alta correlación lineal entre si, se buscó otra variable que tuviera una correlación por encima de 0.5 con la variable respuesta, pero que no estuviese fuertemente correlacionada con las otras dos variables, en este caso “La Variación del índice Real de Precios de la Vivienda Usada”.
+
+Cuando se comparan los reusltados del ultimo modelo de regresión lineal, con los otros modelos se encuentra que a diferencia del otro modelo de regresión lineal multivariante en este se presentaba que al menos una variable es significativa, y una mejoria del R2 del modelo. La interpretación de los Betas se puede dar de la siguiente manera: El valor del incercepto es si no existe variación en el PIB, ni variación en el indice real de precios vivienda usada, la exponencial de la proporcion de los costos de venta seria 2.17, con respecto a la variacion del PIB el beta representa que un cambio del 1%(0.01) haria que el exponencial de la proporción de los costos aumentase 0.0486 unidades, por ultimo el Beta de la variación del indice real de precios de vivienda usada, su beta explica que un cambios del 1% manteniendo los otros parametros constantes, generaria un aumento de 0.018 unidades en el exponencial de la proporcion de los costos
+
+####Sobre los modelos de fectos mixtos
+
+Al identificar resultados no satisfactorios con modelos lineales se inició el análisis desde la perspectiva de los modelos de efectos mixtos ya que estos modelos tienen un gran poder en la modelación de cada individuo al ser capaces de asignar para cada empresa de la muestra un análisis particular mediante un intercepto y/o una pendiente diferente para cada caso.
+
+Al utilizar modelos de efectos mixtos con intercepto y pendientes variables se logró identificar un mejor desempeño de los modelos, pues al realizar la fase de entrenamiento se observó que el comportamiento de los residuales se aproximaba a una distribución normal y no mostraban un patrón definido al ser graficados, por lo que en entrenamiento el modelo obtuvo un buen desempeño, respecto a los residuales y su capacidad predictiva.
+
+En la fase de validación el comportamiento observado no fue tan bueno como se esperaba, pues en las predicciones se pudo observar aleatoriedad entre los datos encontrados y los datos reales, lo que quiere decir que el modelo solo es capaz de predecir sobre los mismos datos que fue modelado, pero ante muestras de testeo, la respuesta no es la misma.
+
+
+###Conclusiones
+
+Buscando entender la relación entre las variables macroeconomicas y los costos de venta de empresas del sector construcción, el analisis exploratorio de los datos permitió adquirir un mayor conocimiento sobre esta incertidumbre que a veces se presenta en las compañias en el calculo de los presupuestos del año siguiente, y mediante el analisis de correlación se logró identificar algunos comportamientos directamente correlacionados e indirectamente correlacionados, frente a este proceso es importante concluir la importancia de eliminar los efectos de variabilidad de las variables, ya que al no eliminarse o controlarse estos pueden generar resultados sesgados o inconsistentes.
+
+Como primera aproximación al modelamiento, la implementación de modelos lineales en donde se empezó a buscar una relación entre los regresores y la proporción de los costos de venta, los resultados obtenidos en este hace concluir que los modelos lineales no es una buena aproximación para este tipo de problemas pues no permiten establecer relaciones fuertes ni entregar variables significativas dentro del modelo, dado el comportamiento particular de los individuos dentro de la muestra, la estructura de los datos y la baja cantidad de puntos de tiempo analizados, estos modelos ayudaron a entender más la data desde una perspectiva exploratoria más que como una forma de lograr predecir los costos de venta de una empresa en función de las variables macroeconómicas.
+
+El análisis llevado a cabo muestra que para el modelamiento de esta situación un modelo de efectos mixtos tiene un mejor desempeño que un modelo lineal al poder caracterizar cada individuo de forma individual sin embargo el numero reducido de puntos de tiempo evaluados hace que el modelo tenga dificultades a la hora de llevar a cabo predicciones, por lo que se puede concluir que con efectos mixtos se podría llegar a realizar una buena predicción de este comportamiento de costos basado en indicsdores macroeconómicos pero para aumentar el desempeño se debe buscar una base de datos con un rango de tiempo más amplio que permita entender al modelo como los cambios en los indicdores conllevan a un cambio en los costos de venta de las empresas.
+
+Finalmente vale la pena considerar poder evaluar las cifras a nivel mensual o trimestral, que permita tener un mayor panorama del comportamiento que ocurre durante el año y que en ocasiones puede tener mayor explicación a las cifras consolidadas del año, que cuando se analiza con cifras por año, por que en el transcurso del año pueden suceder crecimientos, decrecimientos, y podria verse mas el efecto de estos cambios sobre la proporcion de los costos.
+
+##Tiempos y esfuerzos
+
+####Recolección y tratamiento de datos (15%):
+La recolección de datos de costos e ingresos, selección de el sector la selección de los indicadores a analizar y su unificación; carga de la información a R Studio y análisis preliminar para entender como estaba compuesto el set de datos y cuales criterios de exclusión se iban a considerar al igual que se realizaron procesos de limpieza como eliminación de empresas sin costos o ingresos.
+
+####Análisis exploratorio (20%):
+Posteriormente se hizo un análisis descriptivo de los datos y se propusieron algunas transformaciones tanto de la variable respuesta como de las variables regresoras, finalmente se crearon graficas tipo boxplot e histogramas para entender un poco mas los datos
+
+####Transformaciones y regresiones lineales (30%):
+Identificación de nuevas transformaciones de la variable respuesta con el fin de encontrar aquellas que resultara en un modelo con mayor nivel predictivo, segmentación de la muestra, implementación de modelos de regresión lineal multivariante, definición de aquellas variables más significativas a partir de regresiones lineales simples, analisis de residuales y de valores predichos vs los reales
+
+####Modelos de efectos mixtos (20%):
+Ajuste de los modelos de efectos mixtos, validación de los modelos, e interpretación de los resultados obtenidos
+
+####Redacción del informe (15%):
+Consolidación del informe, analisis de los resultados, interpretación de los modelos, ajuste de las graficas, redacción final.
+
